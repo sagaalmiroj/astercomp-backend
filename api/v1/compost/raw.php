@@ -1,65 +1,26 @@
 <?php
 
 // ==================================================
-// RAW.PHP
-// ==================================================
-//
-// Endpoint:
+// ASTERCOMP V1
+// RAW DATA INGEST ENDPOINT
 // POST /api/v1/compost/raw.php
-//
-// Fungsi:
-// 1. Menerima 1 RAW sensor reading dari ESP32.
-// 2. Validasi API Key.
-// 3. Validasi data sensor.
-// 4. Menyimpan data ke compost_raw dengan sample_index
-//    yang KONTINU (tidak pernah reset, tidak pernah
-//    mentok di angka berapa pun) — di-generate oleh
-//    SERVER, bukan dikirim oleh ESP32.
-//
-// ATURAN:
-// - 1 request = 1 RAW sample.
-// - sample_index DIHITUNG OTOMATIS oleh server (lihat
-//   node_counters). ESP32 TIDAK perlu mengirim sample_index.
-// - node_id = 1-5.
-//
-// CATATAN:
-// - submit.php TIDAK mengubah node_status.
-// - ONLINE/OFFLINE ditangani oleh heartbeat.php.
-// - submit.php hanya menangani compost_raw.
-// - Setiap AGGREGATION_WINDOW (100) raw sample yang
-//   masuk lewat endpoint ini, TIDAK otomatis membuat
-//   baris compost_data — itu tetap tugas data.php,
-//   yang dipanggil terpisah oleh ESP32 setelah ESP32
-//   selesai menghitung rata-rata 100 sample secara lokal.
-//
 // ==================================================
 
+header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: https://astercompv1.up.railway.app");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
 
-// ==================================================
-// RESPONSE HEADER
-// ==================================================
-
-header(
-    "Content-Type: application/json; charset=UTF-8"
-);
-
-date_default_timezone_set(
-    "Asia/Jakarta"
-);
+date_default_timezone_set("Asia/Jakarta");
 
 
 // ==================================================
 // RESPONSE HELPER
 // ==================================================
 
-function responseJson(
-    int $httpCode,
-    array $data
-) {
-
-    http_response_code(
-        $httpCode
-    );
+function responseJson(int $httpCode, array $data)
+{
+    http_response_code($httpCode);
 
     echo json_encode(
         $data,
@@ -71,51 +32,43 @@ function responseJson(
 
 
 // ==================================================
-// CONFIGURATION
+// CORS PREFLIGHT
 // ==================================================
 
-$API_KEY =
-    getenv("API_KEY");
-
-$DB_HOST =
-    getenv("MYSQLHOST");
-
-$DB_PORT =
-    getenv("MYSQLPORT");
-
-$DB_NAME =
-    getenv("MYSQLDATABASE");
-
-$DB_USER =
-    getenv("MYSQLUSER");
-
-$DB_PASS =
-    getenv("MYSQLPASSWORD");
-
-
-// ==================================================
-// CHECK API KEY
-// ==================================================
-
-if (
-    $API_KEY === false ||
-    $API_KEY === ""
-) {
-
-    responseJson(
-        500,
-        [
-            "success" => false,
-
-            "message" =>
-                "API_KEY environment variable is not configured"
-        ]
-    );
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+    http_response_code(204);
+    exit;
 }
 
 
 // ==================================================
-// CHECK DATABASE ENVIRONMENT
+// CONFIGURATION
+// ==================================================
+
+$API_KEY = getenv("API_KEY");
+
+$DB_HOST = getenv("MYSQLHOST");
+$DB_PORT = getenv("MYSQLPORT");
+$DB_NAME = getenv("MYSQLDATABASE");
+$DB_USER = getenv("MYSQLUSER");
+$DB_PASS = getenv("MYSQLPASSWORD");
+
+
+// ==================================================
+// CHECK API KEY CONFIGURATION
+// ==================================================
+
+if ($API_KEY === false || $API_KEY === "") {
+
+    responseJson(500, [
+        "success" => false,
+        "message" => "API_KEY environment variable is not configured"
+    ]);
+}
+
+
+// ==================================================
+// CHECK DATABASE CONFIGURATION
 // ==================================================
 
 if (
@@ -126,15 +79,10 @@ if (
     $DB_PASS === false
 ) {
 
-    responseJson(
-        500,
-        [
-            "success" => false,
-
-            "message" =>
-                "Database environment variables are incomplete"
-        ]
-    );
+    responseJson(500, [
+        "success" => false,
+        "message" => "Database environment variables are incomplete"
+    ]);
 }
 
 
@@ -142,84 +90,46 @@ if (
 // ONLY POST
 // ==================================================
 
-if (
-    $_SERVER["REQUEST_METHOD"] !== "POST"
-) {
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 
-    responseJson(
-        405,
-        [
-            "success" => false,
-
-            "message" =>
-                "Method not allowed",
-
-            "allowed_method" =>
-                "POST"
-        ]
-    );
+    responseJson(405, [
+        "success" => false,
+        "message" => "Method not allowed",
+        "allowed_method" => "POST"
+    ]);
 }
 
 
 // ==================================================
-// AUTHORIZATION HEADER
+// READ AUTHORIZATION HEADER
 // ==================================================
 
 $authorization = "";
 
-
-// --------------------------------------------------
-// METHOD 1
-// --------------------------------------------------
-
-if (
-    isset(
-        $_SERVER["HTTP_AUTHORIZATION"]
-    )
-) {
+if (isset($_SERVER["HTTP_AUTHORIZATION"])) {
 
     $authorization =
-        trim(
-            $_SERVER["HTTP_AUTHORIZATION"]
-        );
+        trim($_SERVER["HTTP_AUTHORIZATION"]);
 }
 
 
-// --------------------------------------------------
-// METHOD 2
-// --------------------------------------------------
-
+// Fallback untuk beberapa konfigurasi server
 if (
     $authorization === "" &&
     function_exists("getallheaders")
 ) {
 
-    $headers =
-        getallheaders();
+    $headers = getallheaders();
 
-
-    if (
-        isset(
-            $headers["Authorization"]
-        )
-    ) {
+    if (isset($headers["Authorization"])) {
 
         $authorization =
-            trim(
-                $headers["Authorization"]
-            );
-    }
+            trim($headers["Authorization"]);
 
-    elseif (
-        isset(
-            $headers["authorization"]
-        )
-    ) {
+    } elseif (isset($headers["authorization"])) {
 
         $authorization =
-            trim(
-                $headers["authorization"]
-            );
+            trim($headers["authorization"]);
     }
 }
 
@@ -229,7 +139,6 @@ if (
 // ==================================================
 
 $receivedKey = "";
-
 
 if (
     strncasecmp(
@@ -253,38 +162,21 @@ if (
 // API KEY VALIDATION
 // ==================================================
 
-if (
-    $receivedKey === ""
-) {
+if ($receivedKey === "") {
 
-    responseJson(
-        401,
-        [
-            "success" => false,
-
-            "message" =>
-                "Authorization header missing"
-        ]
-    );
+    responseJson(401, [
+        "success" => false,
+        "message" => "Authorization header missing"
+    ]);
 }
 
 
-if (
-    !hash_equals(
-        $API_KEY,
-        $receivedKey
-    )
-) {
+if (!hash_equals($API_KEY, $receivedKey)) {
 
-    responseJson(
-        401,
-        [
-            "success" => false,
-
-            "message" =>
-                "Invalid API key"
-        ]
-    );
+    responseJson(401, [
+        "success" => false,
+        "message" => "Invalid API key"
+    ]);
 }
 
 
@@ -295,7 +187,6 @@ if (
 $contentType =
     $_SERVER["CONTENT_TYPE"] ?? "";
 
-
 if (
     stripos(
         $contentType,
@@ -303,15 +194,10 @@ if (
     ) === false
 ) {
 
-    responseJson(
-        415,
-        [
-            "success" => false,
-
-            "message" =>
-                "Content-Type must be application/json"
-        ]
-    );
+    responseJson(415, [
+        "success" => false,
+        "message" => "Content-Type must be application/json"
+    ]);
 }
 
 
@@ -319,26 +205,18 @@ if (
 // READ REQUEST BODY
 // ==================================================
 
-$rawData =
-    file_get_contents(
-        "php://input"
-    );
-
+$rawInput =
+    file_get_contents("php://input");
 
 if (
-    $rawData === false ||
-    trim($rawData) === ""
+    $rawInput === false ||
+    trim($rawInput) === ""
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Request body is empty"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Request body is empty"
+    ]);
 }
 
 
@@ -348,82 +226,50 @@ if (
 
 $data =
     json_decode(
-        $rawData,
+        $rawInput,
         true
     );
 
+if (!is_array($data)) {
 
-if (
-    !is_array($data)
-) {
-
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Invalid JSON"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Invalid JSON"
+    ]);
 }
 
 
 // ==================================================
 // REQUIRED FIELDS
 // ==================================================
-//
-// NOTE: sample_index is NOT in this list on purpose.
-// The server generates it (continuous, never resets),
-// so ESP32 only needs to send the raw sensor values.
-//
-// ==================================================
+
+// ESP32 TIDAK PERLU mengirim sample_index.
+// sample_index dibuat otomatis oleh server.
 
 $requiredFields = [
-
     "node_id",
-
     "temperature",
-
     "moisture",
-
     "soil_adc",
-
     "mq4_adc",
-
     "temp_status",
-
     "mq4_status"
-
 ];
 
+foreach ($requiredFields as $field) {
 
-foreach (
-    $requiredFields as $field
-) {
+    if (!array_key_exists($field, $data)) {
 
-    if (
-        !array_key_exists(
-            $field,
-            $data
-        )
-    ) {
-
-        responseJson(
-            400,
-            [
-                "success" => false,
-
-                "message" =>
-                    "Missing field: " . $field
-            ]
-        );
+        responseJson(400, [
+            "success" => false,
+            "message" => "Missing field: " . $field
+        ]);
     }
 }
 
 
 // ==================================================
-// NODE ID
+// VALIDATE NODE ID
 // ==================================================
 
 $nodeId =
@@ -432,27 +278,21 @@ $nodeId =
         FILTER_VALIDATE_INT
     );
 
-
 if (
     $nodeId === false ||
     $nodeId < 1 ||
     $nodeId > 5
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "node_id must be an integer between 1 and 5"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "node_id must be an integer between 1 and 5"
+    ]);
 }
 
 
 // ==================================================
-// TEMPERATURE
+// VALIDATE TEMPERATURE
 // ==================================================
 
 $temperature =
@@ -461,27 +301,21 @@ $temperature =
         FILTER_VALIDATE_FLOAT
     );
 
-
 if (
     $temperature === false ||
     $temperature < -55 ||
     $temperature > 125
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Invalid temperature value"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Invalid temperature value"
+    ]);
 }
 
 
 // ==================================================
-// MOISTURE
+// VALIDATE MOISTURE
 // ==================================================
 
 $moisture =
@@ -490,27 +324,21 @@ $moisture =
         FILTER_VALIDATE_FLOAT
     );
 
-
 if (
     $moisture === false ||
     $moisture < 0 ||
     $moisture > 100
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Moisture must be between 0 and 100"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Moisture must be between 0 and 100"
+    ]);
 }
 
 
 // ==================================================
-// SOIL ADC
+// VALIDATE SOIL ADC
 // ==================================================
 
 $soilADC =
@@ -519,27 +347,21 @@ $soilADC =
         FILTER_VALIDATE_INT
     );
 
-
 if (
     $soilADC === false ||
     $soilADC < 0 ||
     $soilADC > 4095
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Invalid soil_adc value"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Invalid soil_adc value"
+    ]);
 }
 
 
 // ==================================================
-// MQ4 ADC
+// VALIDATE MQ4 ADC
 // ==================================================
 
 $mq4ADC =
@@ -548,27 +370,21 @@ $mq4ADC =
         FILTER_VALIDATE_INT
     );
 
-
 if (
     $mq4ADC === false ||
     $mq4ADC < 0 ||
     $mq4ADC > 4095
 ) {
 
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "Invalid mq4_adc value"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "Invalid mq4_adc value"
+    ]);
 }
 
 
 // ==================================================
-// TEMPERATURE STATUS
+// VALIDATE TEMPERATURE STATUS
 // ==================================================
 
 $tempStatus =
@@ -576,25 +392,17 @@ $tempStatus =
         (string)$data["temp_status"]
     );
 
+if ($tempStatus === "") {
 
-if (
-    $tempStatus === ""
-) {
-
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "temp_status cannot be empty"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "temp_status cannot be empty"
+    ]);
 }
 
 
 // ==================================================
-// MQ4 STATUS
+// VALIDATE MQ4 STATUS
 // ==================================================
 
 $mq4Status =
@@ -602,20 +410,12 @@ $mq4Status =
         (string)$data["mq4_status"]
     );
 
+if ($mq4Status === "") {
 
-if (
-    $mq4Status === ""
-) {
-
-    responseJson(
-        400,
-        [
-            "success" => false,
-
-            "message" =>
-                "mq4_status cannot be empty"
-        ]
-    );
+    responseJson(400, [
+        "success" => false,
+        "message" => "mq4_status cannot be empty"
+    ]);
 }
 
 
@@ -623,10 +423,7 @@ if (
 // DATABASE CONNECTION
 // ==================================================
 
-mysqli_report(
-    MYSQLI_REPORT_OFF
-);
-
+mysqli_report(MYSQLI_REPORT_OFF);
 
 $conn =
     new mysqli(
@@ -637,120 +434,177 @@ $conn =
         (int)$DB_PORT
     );
 
+if ($conn->connect_error) {
 
-if (
-    $conn->connect_error
-) {
-
-    responseJson(
-        500,
-        [
-            "success" => false,
-
-            "message" =>
-                "Database connection failed",
-
-            "error" =>
-                $conn->connect_error
-        ]
-    );
+    responseJson(500, [
+        "success" => false,
+        "message" => "Database connection failed",
+        "error" => $conn->connect_error
+    ]);
 }
 
 
-$conn->set_charset(
-    "utf8mb4"
-);
+$conn->set_charset("utf8mb4");
 
 
 // ==================================================
-// ENSURE node_counters TABLE EXISTS
-// ==================================================
-//
-// Self-healing: if this table was never created (fresh
-// deploy), create it now instead of failing.
-//
-// ==================================================
-
-$conn->query(
-    "CREATE TABLE IF NOT EXISTS node_counters (
-        node_id INT NOT NULL PRIMARY KEY,
-        last_sample_index BIGINT NOT NULL DEFAULT 0,
-        last_aggregated_index BIGINT NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )"
-);
-
-
-// ==================================================
-// TRANSACTION — LOCK COUNTER, COMPUTE CONTINUOUS INDEX,
-// INSERT RAW ROW
-// ==================================================
-//
-// THE FIX: sample_index is generated here from
-// node_counters.last_sample_index + 1 — it NEVER resets,
-// NEVER caps at any fixed number, and is safe under
-// concurrent requests because of SELECT ... FOR UPDATE.
-//
+// TRANSACTION
 // ==================================================
 
 $conn->begin_transaction();
 
 try {
 
-    $lockStmt = $conn->prepare(
-        "SELECT last_sample_index
-         FROM node_counters
-         WHERE node_id = ?
-         FOR UPDATE"
+    // --------------------------------------------------
+    // LOCK RAW DATA COUNTER FOR THIS NODE
+    // --------------------------------------------------
+    //
+    // Kita menggunakan MAX(sample_index) dari raw_data.
+    //
+    // FOR UPDATE mengunci baris hasil query selama
+    // transaksi berjalan.
+    //
+    // Karena raw_data dapat kosong, kita gunakan
+    // tabel counter khusus untuk locking.
+    //
+    // --------------------------------------------------
+
+    $createCounterTable = $conn->query(
+        "CREATE TABLE IF NOT EXISTS node_counters (
+            node_id INT NOT NULL PRIMARY KEY,
+            last_sample_index BIGINT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP
+                DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB"
     );
-    $lockStmt->bind_param("i", $nodeId);
-    $lockStmt->execute();
-    $counterRow = $lockStmt->get_result()->fetch_assoc();
-    $lockStmt->close();
 
-    if (!$counterRow) {
-
-        // ----------------------------------------------
-        // Self-healing seed: if this node has existing
-        // rows in compost_raw (e.g. from before this
-        // endpoint existed), start counting from the
-        // highest sample_index already stored — never
-        // collide with existing data.
-        // ----------------------------------------------
-
-        $seedStmt = $conn->prepare(
-            "SELECT COALESCE(MAX(sample_index), 0) AS max_idx
-             FROM compost_raw
-             WHERE node_id = ?"
+    if (!$createCounterTable) {
+        throw new Exception(
+            "Failed to create node_counters: " .
+            $conn->error
         );
-        $seedStmt->bind_param("i", $nodeId);
-        $seedStmt->execute();
-        $seedRow = $seedStmt->get_result()->fetch_assoc();
-        $seedStmt->close();
-
-        $startIndex = (int)$seedRow["max_idx"];
-
-        $initStmt = $conn->prepare(
-            "INSERT INTO node_counters (node_id, last_sample_index, last_aggregated_index)
-             VALUES (?, ?, 0)
-             ON DUPLICATE KEY UPDATE last_sample_index = last_sample_index"
-        );
-        $initStmt->bind_param("ii", $nodeId, $startIndex);
-        $initStmt->execute();
-        $initStmt->close();
-
-        $counterRow = ["last_sample_index" => $startIndex];
     }
 
-    $nextSampleIndex = (int)$counterRow["last_sample_index"] + 1;
 
-    $insertRaw = $conn->prepare(
-        "INSERT INTO compost_raw
-            (node_id, sample_index, temperature, moisture, soil_adc, mq4_adc, temp_status, mq4_status, recorded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())"
+    // --------------------------------------------------
+    // INSERT COUNTER IF NODE DOES NOT EXIST
+    // --------------------------------------------------
+
+    $seedStmt =
+        $conn->prepare(
+            "INSERT INTO node_counters
+                (node_id, last_sample_index)
+             VALUES (?, 0)
+             ON DUPLICATE KEY UPDATE
+                node_id = node_id"
+        );
+
+    if (!$seedStmt) {
+        throw new Exception(
+            "Failed to prepare counter initialization: " .
+            $conn->error
+        );
+    }
+
+    $seedStmt->bind_param(
+        "i",
+        $nodeId
     );
-    $insertRaw->bind_param(
-        "iiddiiss",
+
+    if (!$seedStmt->execute()) {
+        throw new Exception(
+            "Failed to initialize node counter: " .
+            $seedStmt->error
+        );
+    }
+
+    $seedStmt->close();
+
+
+    // --------------------------------------------------
+    // LOCK COUNTER
+    // --------------------------------------------------
+
+    $lockStmt =
+        $conn->prepare(
+            "SELECT last_sample_index
+             FROM node_counters
+             WHERE node_id = ?
+             FOR UPDATE"
+        );
+
+    if (!$lockStmt) {
+        throw new Exception(
+            "Failed to prepare counter lock: " .
+            $conn->error
+        );
+    }
+
+    $lockStmt->bind_param(
+        "i",
+        $nodeId
+    );
+
+    if (!$lockStmt->execute()) {
+        throw new Exception(
+            "Failed to lock node counter: " .
+            $lockStmt->error
+        );
+    }
+
+    $result =
+        $lockStmt->get_result();
+
+    $counterRow =
+        $result->fetch_assoc();
+
+    $lockStmt->close();
+
+
+    if (!$counterRow) {
+        throw new Exception(
+            "Node counter not found"
+        );
+    }
+
+
+    $nextSampleIndex =
+        ((int)$counterRow["last_sample_index"]) + 1;
+
+
+    // --------------------------------------------------
+    // INSERT RAW DATA
+    // --------------------------------------------------
+
+    $insertStmt =
+        $conn->prepare(
+            "INSERT INTO raw_data
+                (
+                    node_id,
+                    sample_index,
+                    temperature,
+                    moisture,
+                    soil_adc,
+                    mq4_adc,
+                    temp_status,
+                    mq4_status,
+                    recorded_at
+                )
+             VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, NOW())"
+        );
+
+    if (!$insertStmt) {
+        throw new Exception(
+            "Failed to prepare raw insert: " .
+            $conn->error
+        );
+    }
+
+
+    $insertStmt->bind_param(
+        "iiddii ss",
         $nodeId,
         $nextSampleIndex,
         $temperature,
@@ -760,79 +614,123 @@ try {
         $tempStatus,
         $mq4Status
     );
-    $insertRaw->execute();
-    $insertId = $insertRaw->insert_id;
-    $insertRaw->close();
 
-    $updateCounter = $conn->prepare(
-        "UPDATE node_counters
-         SET last_sample_index = ?
-         WHERE node_id = ?"
+    // Perbaikan format bind_param:
+    // i = node_id
+    // i = sample_index
+    // d = temperature
+    // d = moisture
+    // i = soil_adc
+    // i = mq4_adc
+    // s = temp_status
+    // s = mq4_status
+
+    if (!$insertStmt->execute()) {
+        throw new Exception(
+            "Failed to insert raw_data: " .
+            $insertStmt->error
+        );
+    }
+
+
+    $insertId =
+        $insertStmt->insert_id;
+
+    $insertStmt->close();
+
+
+    // --------------------------------------------------
+    // UPDATE COUNTER
+    // --------------------------------------------------
+
+    $updateStmt =
+        $conn->prepare(
+            "UPDATE node_counters
+             SET last_sample_index = ?
+             WHERE node_id = ?"
+        );
+
+    if (!$updateStmt) {
+        throw new Exception(
+            "Failed to prepare counter update: " .
+            $conn->error
+        );
+    }
+
+    $updateStmt->bind_param(
+        "ii",
+        $nextSampleIndex,
+        $nodeId
     );
-    $updateCounter->bind_param("ii", $nextSampleIndex, $nodeId);
-    $updateCounter->execute();
-    $updateCounter->close();
+
+    if (!$updateStmt->execute()) {
+        throw new Exception(
+            "Failed to update node counter: " .
+            $updateStmt->error
+        );
+    }
+
+    $updateStmt->close();
+
+
+    // --------------------------------------------------
+    // COMMIT
+    // --------------------------------------------------
 
     $conn->commit();
+
     $conn->close();
 
-    responseJson(
-        200,
-        [
-            "success" => true,
 
-            "message" =>
-                "Raw compost data received successfully",
+    // --------------------------------------------------
+    // SUCCESS RESPONSE
+    // --------------------------------------------------
 
-            "insert_id" =>
-                (int)$insertId,
+    responseJson(200, [
+        "success" => true,
+        "message" => "Raw compost data received successfully",
 
-            "node_id" =>
-                (int)$nodeId,
+        "insert_id" =>
+            (int)$insertId,
 
-            "sample_index" =>
-                $nextSampleIndex,
+        "node_id" =>
+            (int)$nodeId,
 
-            "temperature" =>
-                (float)$temperature,
+        "sample_index" =>
+            (int)$nextSampleIndex,
 
-            "moisture" =>
-                (float)$moisture,
+        "temperature" =>
+            (float)$temperature,
 
-            "soil_adc" =>
-                (int)$soilADC,
+        "moisture" =>
+            (float)$moisture,
 
-            "mq4_adc" =>
-                (int)$mq4ADC,
+        "soil_adc" =>
+            (int)$soilADC,
 
-            "temp_status" =>
-                $tempStatus,
+        "mq4_adc" =>
+            (int)$mq4ADC,
 
-            "mq4_status" =>
-                $mq4Status,
+        "temp_status" =>
+            $tempStatus,
 
-            "recorded_at" =>
-                date("Y-m-d H:i:s")
-        ]
-    );
+        "mq4_status" =>
+            $mq4Status,
+
+        "recorded_at" =>
+            date("Y-m-d H:i:s")
+    ]);
 
 } catch (Throwable $e) {
 
     $conn->rollback();
     $conn->close();
 
-    responseJson(
-        500,
-        [
-            "success" => false,
-
-            "message" =>
-                "Failed to insert raw data",
-
-            "error" =>
-                $e->getMessage()
-        ]
-    );
+    responseJson(500, [
+        "success" => false,
+        "message" => "Failed to insert raw data",
+        "error" => $e->getMessage()
+    ]);
 }
 
 ?>
