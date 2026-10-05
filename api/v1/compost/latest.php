@@ -45,7 +45,7 @@ date_default_timezone_set(
 // ==================================================
 
 $allowedOrigin =
-    "https://aster-smart-compost-frontend-production.up.railway.app";
+    "https://astercompv1.up.railway.app/";
 
 
 header(
