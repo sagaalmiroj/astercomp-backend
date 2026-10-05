@@ -604,7 +604,7 @@ try {
 
 
     $insertStmt->bind_param(
-        "iiddii ss",
+        "iiddiiss",
         $nodeId,
         $nextSampleIndex,
         $temperature,
