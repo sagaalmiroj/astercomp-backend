@@ -1,70 +1,52 @@
 <?php
 
-// ==================================================
-// RESET.PHP  (REVISED — supports partial or full reset)
-// ==================================================
+// ============================================================
+// ASTER SMART COMPOST API
+// RESET ENDPOINT
+// ============================================================
 //
 // Endpoint:
 // POST /api/v1/compost/reset.php
 //
-// Body (JSON, optional):
-//   {}                          -> reset ALL nodes (unchanged default behavior)
-//   {"node_ids": [1,3]}         -> reset ONLY node 1 and node 3
-//   {"node_ids": [1,2,3,4,5]}   -> same effect as resetting all, but goes
-//                                  through the "specific nodes" code path
+// Body JSON:
 //
-// Fungsi:
-// Menghapus DATA MONITORING untuk node yang dipilih
-// (atau seluruh node kalau node_ids tidak dikirim):
+// {} 
+// -> reset semua node
 //
-// 1. compost_raw
-// 2. compost_data
-// 3. node_status
-// 4. node_counters (RESET ke 0, bukan dihapus — lihat catatan)
+// {"node_ids":[1,3]}
+// -> reset node 1 dan 3 saja
 //
-// Setelah reset:
-// - History RAW node terkait terhapus
-// - History AGGREGATED node terkait terhapus
-// - Heartbeat/status node terkait terhapus
-// - AUTO_INCREMENT di-reset (HANYA saat reset SEMUA node —
-//   lihat catatan di bagian AUTO_INCREMENT)
-// - sample_index & aggregated_index kontinu milik node
-//   terkait ikut kembali ke 0, supaya insert berikutnya
-//   untuk node itu mulai dari #1 lagi
+// {"node_ids":[1,2,3,4,5]}
+// -> reset semua node
 //
-// CATATAN PENTING:
-// compost_raw.sample_index dan compost_data.sample_index
-// (aggregated_index) TIDAK memakai AUTO_INCREMENT bawaan
-// MySQL — nilainya dihasilkan oleh raw.php dan data.php
-// dari tabel node_counters (supaya kontinu, tidak pernah
-// reset per hari). Karena itu, mereset compost_raw dan
-// compost_data saja TIDAK CUKUP: node_counters tetap
-// menyimpan angka terakhir sebelum reset, sehingga insert
-// berikutnya akan melanjutkan dari situ (bukan mulai dari
-// 1) walau tabel datanya sendiri sudah kosong untuk node
-// itu. Bagian di bawah menangani ini per-node.
+// Database:
+//   raw_data
+//   aggregated_data
 //
-// ==================================================
+// Catatan:
+//   Tidak menggunakan node_status karena tabel tersebut
+//   tidak ada pada schema ASTERCOMP saat ini.
+//   Status ONLINE/OFFLINE dihitung oleh latest.php
+//   berdasarkan raw_data.recorded_at.
+//
+// ============================================================
 
 
-// ==================================================
+// ============================================================
 // TIMEZONE
-// ==================================================
+// ============================================================
 
 date_default_timezone_set("Asia/Jakarta");
 
 
-// ==================================================
+// ============================================================
 // CORS
-// ==================================================
+// ============================================================
 
-$allowedOrigin =
-    "https://astercompv1.up.railway.app/";
-
+$allowedOrigin = "https://astercompv1.up.railway.app";
 
 header(
-    "Access-Control-Allow-Origin: " .
-    $allowedOrigin
+    "Access-Control-Allow-Origin: " . $allowedOrigin
 );
 
 header(
@@ -88,13 +70,11 @@ header(
 );
 
 
-// ==================================================
+// ============================================================
 // PREFLIGHT
-// ==================================================
+// ============================================================
 
-if (
-    $_SERVER["REQUEST_METHOD"] === "OPTIONS"
-) {
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 
     http_response_code(204);
 
@@ -102,26 +82,38 @@ if (
 }
 
 
-// ==================================================
+// ============================================================
 // ONLY POST
-// ==================================================
+// ============================================================
 
-if (
-    $_SERVER["REQUEST_METHOD"] !== "POST"
-) {
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 
     http_response_code(405);
 
+    echo json_encode([
+        "success" => false,
+        "message" => "Method not allowed",
+        "allowed_method" => "POST"
+    ], JSON_UNESCAPED_UNICODE);
+
+    exit;
+}
+
+
+// ============================================================
+// RESPONSE HELPER
+// ============================================================
+
+function responseJson(
+    int $httpCode,
+    array $data
+): void {
+
+    http_response_code($httpCode);
+
     echo json_encode(
-        [
-            "success" => false,
-
-            "message" =>
-                "Method not allowed",
-
-            "allowed_method" =>
-                "POST"
-        ],
+        $data,
+        JSON_PRETTY_PRINT |
         JSON_UNESCAPED_UNICODE
     );
 
@@ -129,71 +121,71 @@ if (
 }
 
 
-// ==================================================
-// PARSE REQUEST BODY — OPTIONAL node_ids
-// ==================================================
-//
-// Body is optional. If empty, missing, not valid JSON,
-// or node_ids is missing/empty/null -> full reset (all
-// nodes), matching the original behavior exactly.
-//
-// ==================================================
+// ============================================================
+// PARSE JSON BODY
+// ============================================================
 
-$rawBody =
-    file_get_contents("php://input");
+$rawBody = file_get_contents("php://input");
 
-$body =
-    json_decode(
-        $rawBody === false ? "" : $rawBody,
-        true
-    );
+$body = json_decode(
+    $rawBody ?: "",
+    true
+);
 
-if (
-    !is_array($body)
-) {
 
+// Empty / invalid JSON = full reset
+if (!is_array($body)) {
     $body = [];
 }
 
 
-$nodeIds = null; // null = full reset (all nodes)
+// ============================================================
+// NODE SCOPE
+// ============================================================
+//
+// null = semua node
+//
+// array = node tertentu
+//
+// ============================================================
+
+$nodeIds = null;
+
 
 if (
     array_key_exists("node_ids", $body) &&
     $body["node_ids"] !== null
 ) {
 
-    if (
-        !is_array($body["node_ids"])
-    ) {
 
-        http_response_code(400);
+    // --------------------------------------------------------
+    // node_ids harus array
+    // --------------------------------------------------------
 
-        echo json_encode(
-            [
-                "success" => false,
+    if (!is_array($body["node_ids"])) {
 
-                "message" =>
-                    "node_ids must be an array of integers between 1 and 5"
-            ],
-            JSON_UNESCAPED_UNICODE
-        );
-
-        exit;
+        responseJson(400, [
+            "success" => false,
+            "message" =>
+                "node_ids must be an array of integers between 1 and 5"
+        ]);
     }
 
 
+    // --------------------------------------------------------
+    // CLEAN NODE IDS
+    // --------------------------------------------------------
+
     $cleanIds = [];
 
-    foreach (
-        $body["node_ids"] as $rawId
-    ) {
 
-        $id =
-            filter_var(
-                $rawId,
-                FILTER_VALIDATE_INT
-            );
+    foreach ($body["node_ids"] as $rawId) {
+
+        $id = filter_var(
+            $rawId,
+            FILTER_VALIDATE_INT
+        );
+
 
         if (
             $id === false ||
@@ -201,57 +193,47 @@ if (
             $id > 5
         ) {
 
-            http_response_code(400);
-
-            echo json_encode(
-                [
-                    "success" => false,
-
-                    "message" =>
-                        "node_ids must only contain integers between 1 and 5"
-                ],
-                JSON_UNESCAPED_UNICODE
-            );
-
-            exit;
+            responseJson(400, [
+                "success" => false,
+                "message" =>
+                    "node_ids must only contain integers between 1 and 5"
+            ]);
         }
 
-        if (
-            !in_array($id, $cleanIds, true)
-        ) {
+
+        if (!in_array(
+            $id,
+            $cleanIds,
+            true
+        )) {
 
             $cleanIds[] = $id;
         }
     }
 
 
-    if (
-        count($cleanIds) === 0
-    ) {
+    // --------------------------------------------------------
+    // EMPTY ARRAY
+    // --------------------------------------------------------
 
-        http_response_code(400);
+    if (count($cleanIds) === 0) {
 
-        echo json_encode(
-            [
-                "success" => false,
-
-                "message" =>
-                    "node_ids was provided but contained no valid node IDs"
-            ],
-            JSON_UNESCAPED_UNICODE
-        );
-
-        exit;
+        responseJson(400, [
+            "success" => false,
+            "message" =>
+                "node_ids was provided but contained no valid node IDs"
+        ]);
     }
 
 
     sort($cleanIds);
 
-    // If every node (1-5) was explicitly selected, treat it
-    // as a full reset so AUTO_INCREMENT still gets reset too.
-    if (
-        count($cleanIds) === 5
-    ) {
+
+    // --------------------------------------------------------
+    // ALL FIVE NODES = FULL RESET
+    // --------------------------------------------------------
+
+    if (count($cleanIds) === 5) {
 
         $nodeIds = null;
 
@@ -262,32 +244,23 @@ if (
 }
 
 
+// ============================================================
+// RESET TYPE
+// ============================================================
+
 $isFullReset = ($nodeIds === null);
 
 
-// ==================================================
+// ============================================================
 // DATABASE ENVIRONMENT
-// ==================================================
+// ============================================================
 
-$DB_HOST =
-    getenv("MYSQLHOST");
+$DB_HOST = getenv("MYSQLHOST");
+$DB_PORT = getenv("MYSQLPORT");
+$DB_NAME = getenv("MYSQLDATABASE");
+$DB_USER = getenv("MYSQLUSER");
+$DB_PASS = getenv("MYSQLPASSWORD");
 
-$DB_PORT =
-    getenv("MYSQLPORT");
-
-$DB_NAME =
-    getenv("MYSQLDATABASE");
-
-$DB_USER =
-    getenv("MYSQLUSER");
-
-$DB_PASS =
-    getenv("MYSQLPASSWORD");
-
-
-// ==================================================
-// VALIDATE DATABASE ENVIRONMENT
-// ==================================================
 
 if (
     $DB_HOST === false ||
@@ -297,106 +270,78 @@ if (
     $DB_PASS === false
 ) {
 
-    http_response_code(500);
-
-    echo json_encode(
-        [
-            "success" => false,
-
-            "message" =>
-                "Database environment variables are incomplete"
-        ],
-        JSON_UNESCAPED_UNICODE
-    );
-
-    exit;
+    responseJson(500, [
+        "success" => false,
+        "message" =>
+            "Database environment variables are incomplete"
+    ]);
 }
 
 
-// ==================================================
+// ============================================================
 // DATABASE CONNECTION
-// ==================================================
+// ============================================================
 
-mysqli_report(
-    MYSQLI_REPORT_OFF
+mysqli_report(MYSQLI_REPORT_OFF);
+
+
+$conn = new mysqli(
+    $DB_HOST,
+    $DB_USER,
+    $DB_PASS,
+    $DB_NAME,
+    (int)$DB_PORT
 );
 
 
-$conn =
-    new mysqli(
-        $DB_HOST,
-        $DB_USER,
-        $DB_PASS,
-        $DB_NAME,
-        (int)$DB_PORT
-    );
+if ($conn->connect_error) {
 
-
-// ==================================================
-// CHECK CONNECTION
-// ==================================================
-
-if (
-    $conn->connect_error
-) {
-
-    http_response_code(500);
-
-    echo json_encode(
-        [
-            "success" => false,
-
-            "message" =>
-                "Database connection failed"
-        ],
-        JSON_UNESCAPED_UNICODE
-    );
-
-    exit;
+    responseJson(500, [
+        "success" => false,
+        "message" =>
+            "Database connection failed",
+        "error" =>
+            $conn->connect_error
+    ]);
 }
 
 
-// ==================================================
-// CHARACTER SET
-// ==================================================
+if (!$conn->set_charset("utf8mb4")) {
 
-$conn->set_charset(
-    "utf8mb4"
-);
+    $conn->close();
 
-
-// ==================================================
-// ENSURE node_counters TABLE EXISTS
-// ==================================================
-//
-// Self-healing — matches raw.php/data.php's behavior.
-// If this table was somehow never created, reset.php
-// should not fail; it just creates it (empty/zeroed).
-//
-// ==================================================
-
-$conn->query(
-    "CREATE TABLE IF NOT EXISTS node_counters (
-        node_id INT NOT NULL PRIMARY KEY,
-        last_sample_index BIGINT NOT NULL DEFAULT 0,
-        last_aggregated_index BIGINT NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )"
-);
+    responseJson(500, [
+        "success" => false,
+        "message" =>
+            "Failed to configure database character set"
+    ]);
+}
 
 
-// ==================================================
-// BUILD THE node_id IN (...) CLAUSE (only used when
-// $isFullReset is false)
-// ==================================================
+// ============================================================
+// BUILD NODE WHERE
+// ============================================================
 
-$nodeIdList = $isFullReset ? "" : implode(",", $nodeIds);
-$whereNodeClause = $isFullReset ? "" : ("WHERE node_id IN ($nodeIdList)");
+$whereNodeClause = "";
+
+if (!$isFullReset) {
+
+    $nodeIdList = implode(
+        ",",
+        array_map(
+            "intval",
+            $nodeIds
+        )
+    );
+
+    $whereNodeClause =
+        "WHERE node_id IN ($nodeIdList)";
+}
 
 
-// ==================================================
-// START TRANSACTION
-// ==================================================
+// ============================================================
+// TRANSACTION
+// ============================================================
 
 $conn->begin_transaction();
 
@@ -404,332 +349,201 @@ $conn->begin_transaction();
 try {
 
 
-    // ==================================================
-    // COUNT DATA BEFORE DELETE (scoped to selected nodes)
-    // ==================================================
+    // ========================================================
+    // COUNT RAW BEFORE
+    // ========================================================
 
-    $countRaw =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM compost_raw $whereNodeClause"
-        );
+    $result = $conn->query(
+        "SELECT COUNT(*) AS total
+         FROM raw_data
+         $whereNodeClause"
+    );
 
-    if (!$countRaw) {
+
+    if (!$result) {
 
         throw new Exception(
-            "Failed to count compost_raw"
+            "Failed to count raw_data: " .
+            $conn->error
         );
     }
 
-    $rawBefore =
-        intval(
-            $countRaw
-                ->fetch_assoc()["total"]
-        );
 
-    $countRaw->free();
+    $rawBefore = intval(
+        $result->fetch_assoc()["total"]
+    );
 
 
-    // ==================================================
-    // COUNT AGGREGATED BEFORE DELETE
-    // ==================================================
+    $result->free();
 
-    $countAggregated =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM compost_data $whereNodeClause"
-        );
 
-    if (!$countAggregated) {
+    // ========================================================
+    // COUNT AGGREGATED BEFORE
+    // ========================================================
+
+    $result = $conn->query(
+        "SELECT COUNT(*) AS total
+         FROM aggregated_data
+         $whereNodeClause"
+    );
+
+
+    if (!$result) {
 
         throw new Exception(
-            "Failed to count compost_data"
+            "Failed to count aggregated_data: " .
+            $conn->error
         );
     }
 
-    $aggregatedBefore =
-        intval(
-            $countAggregated
-                ->fetch_assoc()["total"]
-        );
 
-    $countAggregated->free();
+    $aggregatedBefore = intval(
+        $result->fetch_assoc()["total"]
+    );
 
 
-    // ==================================================
-    // COUNT HEARTBEAT BEFORE DELETE
-    // ==================================================
-
-    $countHeartbeat =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM node_status $whereNodeClause"
-        );
-
-    if (!$countHeartbeat) {
-
-        throw new Exception(
-            "Failed to count node_status"
-        );
-    }
-
-    $heartbeatBefore =
-        intval(
-            $countHeartbeat
-                ->fetch_assoc()["total"]
-        );
-
-    $countHeartbeat->free();
+    $result->free();
 
 
-    // ==================================================
+    // ========================================================
     // DELETE RAW
-    // ==================================================
+    // ========================================================
 
-    if (
-        !$conn->query(
-            "DELETE FROM compost_raw $whereNodeClause"
-        )
-    ) {
+    if (!$conn->query(
+        "DELETE FROM raw_data
+         $whereNodeClause"
+    )) {
 
         throw new Exception(
-            "Failed to delete compost_raw: " .
+            "Failed to delete raw_data: " .
             $conn->error
         );
     }
 
 
-    // ==================================================
+    // ========================================================
     // DELETE AGGREGATED
-    // ==================================================
+    // ========================================================
 
-    if (
-        !$conn->query(
-            "DELETE FROM compost_data $whereNodeClause"
-        )
-    ) {
+    if (!$conn->query(
+        "DELETE FROM aggregated_data
+         $whereNodeClause"
+    )) {
 
         throw new Exception(
-            "Failed to delete compost_data: " .
+            "Failed to delete aggregated_data: " .
             $conn->error
         );
     }
 
 
-    // ==================================================
-    // DELETE HEARTBEAT
-    // ==================================================
-
-    if (
-        !$conn->query(
-            "DELETE FROM node_status $whereNodeClause"
-        )
-    ) {
-
-        throw new Exception(
-            "Failed to delete node_status: " .
-            $conn->error
-        );
-    }
-
-
-    // ==================================================
+    // ========================================================
     // RESET AUTO_INCREMENT
-    // ==================================================
+    // ========================================================
     //
-    // Only safe/meaningful for a FULL reset. If only some
-    // nodes are cleared, rows from the untouched nodes
-    // still exist with their own ids — forcing
-    // AUTO_INCREMENT back to 1 would be a no-op at best
-    // (MySQL silently keeps it at max(id)+1 anyway) so we
-    // skip it entirely for a partial reset to avoid a
-    // pointless ALTER TABLE on a live table.
+    // Full reset:
+    //   IDs dimulai kembali dari 1.
     //
-    // ==================================================
+    // Partial reset:
+    //   AUTO_INCREMENT tidak disentuh karena data node lain
+    //   masih ada.
+    //
+    // ========================================================
 
     if ($isFullReset) {
 
-        if (
-            !$conn->query(
-                "ALTER TABLE compost_raw AUTO_INCREMENT = 1"
-            )
-        ) {
+
+        if (!$conn->query(
+            "ALTER TABLE raw_data AUTO_INCREMENT = 1"
+        )) {
 
             throw new Exception(
-                "Failed to reset compost_raw AUTO_INCREMENT"
+                "Failed to reset raw_data AUTO_INCREMENT: " .
+                $conn->error
             );
         }
 
 
-        if (
-            !$conn->query(
-                "ALTER TABLE compost_data AUTO_INCREMENT = 1"
-            )
-        ) {
+        if (!$conn->query(
+            "ALTER TABLE aggregated_data AUTO_INCREMENT = 1"
+        )) {
 
             throw new Exception(
-                "Failed to reset compost_data AUTO_INCREMENT"
+                "Failed to reset aggregated_data AUTO_INCREMENT: " .
+                $conn->error
             );
         }
     }
 
 
-    // ==================================================
-    // RESET node_counters  (scoped to selected nodes)
-    // ==================================================
-    //
-    // This is what raw.php and data.php read from to
-    // generate sample_index / aggregated_index. Without
-    // resetting this too, both would keep counting up
-    // from wherever they left off (e.g. #106) even though
-    // compost_raw / compost_data are now empty for that
-    // node.
-    //
-    // ==================================================
-
-    if (
-        !$conn->query(
-            "UPDATE node_counters SET last_sample_index = 0, last_aggregated_index = 0 $whereNodeClause"
-        )
-    ) {
-
-        throw new Exception(
-            "Failed to reset node_counters: " .
-            $conn->error
-        );
-    }
-
-
-    // ==================================================
-    // ENSURE SELECTED NODES HAVE A COUNTER ROW
-    // ==================================================
-    //
-    // In case a node has never sent data yet and so has
-    // no row at all — insert one at 0 so future self-heal
-    // logic in raw.php/data.php isn't needed for it.
-    //
-    // ==================================================
-
-    $seedNodeIds = $isFullReset ? [1,2,3,4,5] : $nodeIds;
-    $seedValues = implode(
-        ", ",
-        array_map(
-            fn($id) => "($id,0,0)",
-            $seedNodeIds
-        )
-    );
-
-    if (
-        !$conn->query(
-            "INSERT IGNORE INTO node_counters (node_id, last_sample_index, last_aggregated_index)
-             VALUES $seedValues"
-        )
-    ) {
-
-        throw new Exception(
-            "Failed to seed node_counters: " .
-            $conn->error
-        );
-    }
-
-
-    // ==================================================
+    // ========================================================
     // COMMIT
-    // ==================================================
+    // ========================================================
 
     $conn->commit();
 
 
-    // ==================================================
-    // VERIFY AFTER DELETE (scoped to selected nodes)
-    // ==================================================
+    // ========================================================
+    // VERIFY RAW
+    // ========================================================
 
-    $verifyRaw =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM compost_raw $whereNodeClause"
-        );
-
-    $verifyAggregated =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM compost_data $whereNodeClause"
-        );
-
-    $verifyHeartbeat =
-        $conn->query(
-            "SELECT COUNT(*) AS total FROM node_status $whereNodeClause"
-        );
-
-    $verifyCounters =
-        $conn->query(
-            "SELECT COALESCE(SUM(last_sample_index),0) AS raw_sum, COALESCE(SUM(last_aggregated_index),0) AS agg_sum
-             FROM node_counters $whereNodeClause"
-        );
+    $result = $conn->query(
+        "SELECT COUNT(*) AS total
+         FROM raw_data
+         $whereNodeClause"
+    );
 
 
-    if (
-        !$verifyRaw ||
-        !$verifyAggregated ||
-        !$verifyHeartbeat ||
-        !$verifyCounters
-    ) {
+    if (!$result) {
 
         throw new Exception(
-            "Verification query failed"
+            "Failed to verify raw_data"
         );
     }
 
 
-    $rawAfter =
-        intval(
-            $verifyRaw
-                ->fetch_assoc()["total"]
+    $rawAfter = intval(
+        $result->fetch_assoc()["total"]
+    );
+
+
+    $result->free();
+
+
+    // ========================================================
+    // VERIFY AGGREGATED
+    // ========================================================
+
+    $result = $conn->query(
+        "SELECT COUNT(*) AS total
+         FROM aggregated_data
+         $whereNodeClause"
+    );
+
+
+    if (!$result) {
+
+        throw new Exception(
+            "Failed to verify aggregated_data"
         );
+    }
 
 
-    $aggregatedAfter =
-        intval(
-            $verifyAggregated
-                ->fetch_assoc()["total"]
-        );
+    $aggregatedAfter = intval(
+        $result->fetch_assoc()["total"]
+    );
 
 
-    $heartbeatAfter =
-        intval(
-            $verifyHeartbeat
-                ->fetch_assoc()["total"]
-        );
+    $result->free();
 
 
-    $countersRow =
-        $verifyCounters->fetch_assoc();
-
-    $countersRawSum =
-        intval(
-            $countersRow["raw_sum"]
-        );
-
-    $countersAggSum =
-        intval(
-            $countersRow["agg_sum"]
-        );
-
-
-    $verifyRaw->free();
-
-    $verifyAggregated->free();
-
-    $verifyHeartbeat->free();
-
-    $verifyCounters->free();
-
-
-    // ==================================================
+    // ========================================================
     // FINAL VALIDATION
-    // ==================================================
+    // ========================================================
 
     if (
         $rawAfter !== 0 ||
-        $aggregatedAfter !== 0 ||
-        $heartbeatAfter !== 0 ||
-        $countersRawSum !== 0 ||
-        $countersAggSum !== 0
+        $aggregatedAfter !== 0
     ) {
 
         throw new Exception(
@@ -738,125 +552,91 @@ try {
     }
 
 
-    // ==================================================
-    // SUCCESS RESPONSE
-    // ==================================================
+    // ========================================================
+    // SUCCESS
+    // ========================================================
 
-    http_response_code(200);
+    $conn->close();
 
-    echo json_encode(
-        [
 
-            "success" =>
-                true,
+    responseJson(200, [
 
-            "message" =>
+        "success" => true,
+
+        "message" =>
+            $isFullReset
+                ? "All compost monitoring history has been completely cleared"
+                : "Compost monitoring history has been cleared for the selected node(s)",
+
+        "server_time" =>
+            date("Y-m-d H:i:s"),
+
+        "timezone" =>
+            "Asia/Jakarta",
+
+        "scope" => [
+
+            "all_nodes" =>
+                $isFullReset,
+
+            "node_ids" =>
                 $isFullReset
-                    ? "All compost monitoring history has been completely cleared"
-                    : "Compost monitoring history has been cleared for the selected node(s)",
-
-            "server_time" =>
-                date("Y-m-d H:i:s"),
-
-            "timezone" =>
-                "Asia/Jakarta",
-
-            "scope" => [
-
-                "all_nodes" =>
-                    $isFullReset,
-
-                "node_ids" =>
-                    $isFullReset ? [1,2,3,4,5] : $nodeIds
-
-            ],
-
-            "deleted" => [
-
-                "compost_raw" =>
-                    $rawBefore,
-
-                "compost_data" =>
-                    $aggregatedBefore,
-
-                "node_status" =>
-                    $heartbeatBefore
-
-            ],
-
-            "remaining" => [
-
-                "compost_raw" =>
-                    $rawAfter,
-
-                "compost_data" =>
-                    $aggregatedAfter,
-
-                "node_status" =>
-                    $heartbeatAfter
-
-            ],
-
-            "counters_reset" =>
-                true,
-
-            "database_cleared" =>
-                true
-
+                    ? [1, 2, 3, 4, 5]
+                    : $nodeIds
         ],
-        JSON_PRETTY_PRINT |
-        JSON_UNESCAPED_UNICODE
-    );
 
+        "deleted" => [
+
+            "raw_data" =>
+                $rawBefore,
+
+            "aggregated_data" =>
+                $aggregatedBefore
+        ],
+
+        "remaining" => [
+
+            "raw_data" =>
+                $rawAfter,
+
+            "aggregated_data" =>
+                $aggregatedAfter
+        ],
+
+        "database_cleared" =>
+            true,
+
+        "_debug_version" =>
+            "reset-v2-2026-10-05"
+    ]);
 }
 
 
-// ==================================================
+// ============================================================
 // ERROR
-// ==================================================
+// ============================================================
 
-catch (
-    Exception $e
-) {
-
-
-    // ==================================================
-    // ROLLBACK
-    // ==================================================
+catch (Throwable $e) {
 
     $conn->rollback();
 
+    $errorMessage = $e->getMessage();
 
-    http_response_code(500);
+    $conn->close();
 
+    responseJson(500, [
 
-    echo json_encode(
-        [
+        "success" => false,
 
-            "success" =>
-                false,
+        "message" =>
+            "Reset failed",
 
-            "message" =>
-                "Reset failed",
+        "error" =>
+            $errorMessage,
 
-            "error" =>
-                $e->getMessage(),
-
-            "database_cleared" =>
-                false
-
-        ],
-        JSON_PRETTY_PRINT |
-        JSON_UNESCAPED_UNICODE
-    );
-
+        "database_cleared" =>
+            false
+    ]);
 }
-
-
-// ==================================================
-// CLOSE
-// ==================================================
-
-$conn->close();
 
 ?>
